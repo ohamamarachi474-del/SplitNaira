@@ -23,6 +23,69 @@ export class RequestValidationError extends Error {
   }
 }
 
+export class RpcError extends Error {
+  constructor(message: string, public statusCode: number = 502) {
+    super(message);
+    this.name = "RpcError";
+  }
+}
+
+export class RpcTimeoutError extends RpcError {
+  constructor(message: string = "RPC operation timed out") {
+    super(message, 504);
+    this.name = "RpcTimeoutError";
+  }
+}
+
+export interface RetryOptions {
+  maxRetries?: number;
+  initialDelayMs?: number;
+  timeoutMs?: number;
+}
+
+const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
+  maxRetries: 3,
+  initialDelayMs: 1000,
+  timeoutMs: 10000
+};
+
+export async function executeWithRetry<T>(
+  operation: () => Promise<T>,
+  options: RetryOptions = {}
+): Promise<T> {
+  const { maxRetries, initialDelayMs, timeoutMs } = {
+    ...DEFAULT_RETRY_OPTIONS,
+    ...options
+  };
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new RpcTimeoutError()), timeoutMs)
+      );
+
+      return await Promise.race([operation(), timeoutPromise]);
+    } catch (error) {
+      lastError = error as Error;
+
+      // Don't retry validation errors or timeouts (unless we want to retry on timeout)
+      if (error instanceof RequestValidationError) {
+        throw error;
+      }
+
+      if (attempt < maxRetries) {
+        const delay = initialDelayMs * Math.pow(2, attempt);
+        console.warn(`[rpc] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError || new RpcError("RPC operation failed after retries");
+}
+
 /**
  * Shape returned by every unsigned-transaction builder — what the client
  * receives to sign with Freighter and submit back to the network.
@@ -81,6 +144,8 @@ export async function resolveSourceAccount(
 ) {
   const server = getStellarRpcServer();
   try {
+    // Don't retry: "account not found" isn't transient, and retrying would
+    // blow past Express response timeouts on invalid addresses.
     return await server.getAccount(address);
   } catch {
     throw new RequestValidationError(
@@ -136,7 +201,7 @@ export async function buildUnsignedContractCall(params: {
     .setTimeout(300)
     .build();
 
-  const preparedTx = await server.prepareTransaction(tx);
+  const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
 
   return {
     xdr: preparedTx.toXDR(),

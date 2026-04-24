@@ -133,7 +133,6 @@ impl SplitNairaContract {
     /// Pauses all distributions (emergency stop). Only contract admin can call.
     pub fn pause_distributions(env: Env, admin: Address) -> Result<(), SplitError> {
         Self::require_contract_admin(&env, &admin)?;
-        admin.require_auth();
 
         env.storage()
             .persistent()
@@ -144,7 +143,6 @@ impl SplitNairaContract {
     /// Unpauses distributions. Only contract admin can call.
     pub fn unpause_distributions(env: Env, admin: Address) -> Result<(), SplitError> {
         Self::require_contract_admin(&env, &admin)?;
-        admin.require_auth();
 
         env.storage()
             .persistent()
@@ -349,6 +347,7 @@ impl SplitNairaContract {
         env.storage()
             .persistent()
             .set(&DataKey::Project(project_id.clone()), &project);
+        Self::bump_project_ttl(&env, &project_id);
 
         ProjectLocked {
             project_id: project_id.clone(),
@@ -391,6 +390,7 @@ impl SplitNairaContract {
         env.storage()
             .persistent()
             .set(&DataKey::ProjectBalance(project_id.clone()), &new_balance);
+        Self::bump_project_ttl(&env, &project_id);
 
         DepositReceived {
             project_id: project_id.clone(),
@@ -420,9 +420,7 @@ impl SplitNairaContract {
     /// * `SplitError::NotFound`   - if project doesn't exist
     /// * `SplitError::NoBalance`  - if contract has zero balance
     pub fn distribute(env: Env, project_id: Symbol) -> Result<(), SplitError> {
-        let mut project = Self::get_project_or_err(&env, &project_id)?;
-
-        // Check if distributions are paused
+        // Check if distributions are paused before touching project state.
         let paused: bool = env
             .storage()
             .persistent()
@@ -431,6 +429,8 @@ impl SplitNairaContract {
         if paused {
             return Err(SplitError::DistributionsPaused);
         }
+
+        let mut project = Self::get_project_or_err(&env, &project_id)?;
 
         // Read project-scoped distributable balance.
         let balance: i128 = env
@@ -473,6 +473,7 @@ impl SplitNairaContract {
                     &DataKey::Claimed(project_id.clone(), collab.address.clone()),
                     &(prev_claimed + amount),
                 );
+                Self::bump_claimed_ttl(&env, &project_id, &collab.address);
 
                 total_sent += amount;
 
@@ -531,10 +532,23 @@ impl SplitNairaContract {
 
     /// Returns how much a specific address has been paid for a project.
     pub fn get_claimed(env: Env, project_id: Symbol, address: Address) -> i128 {
+        if Self::has_project(&env, &project_id) {
+            Self::bump_project_ttl(&env, &project_id);
+            Self::bump_claimed_ttl(&env, &project_id, &address);
+        }
         env.storage()
             .persistent()
             .get::<DataKey, i128>(&DataKey::Claimed(project_id, address))
             .unwrap_or(0)
+    }
+
+    /// Explicit, permissionless storage maintenance endpoint.
+    ///
+    /// Operators can call this for inactive-but-important projects to keep
+    /// project state and collaborator claimed ledgers alive over long periods.
+    pub fn refresh_project_storage(env: Env, project_id: Symbol) -> Result<(), SplitError> {
+        Self::get_project_or_err(&env, &project_id)?;
+        Ok(())
     }
 
     /// Returns the total number of projects created on this contract.
@@ -714,6 +728,7 @@ impl SplitNairaContract {
         collaborator: Address,
     ) -> Result<ClaimableInfo, SplitError> {
         let project = Self::get_project_or_err(&env, &project_id)?;
+        Self::bump_claimed_ttl(&env, &project_id, &collaborator);
         let claimed = env
             .storage()
             .persistent()
@@ -803,6 +818,18 @@ impl SplitNairaContract {
             PROJECT_TTL_THRESHOLD_LEDGERS,
             PROJECT_TTL_BUMP_LEDGERS,
         );
+    }
+
+    /// Extends TTL for collaborator-level claimed ledger when the key exists.
+    fn bump_claimed_ttl(env: &Env, project_id: &Symbol, collaborator: &Address) {
+        let claimed_key = DataKey::Claimed(project_id.clone(), collaborator.clone());
+        if env.storage().persistent().has(&claimed_key) {
+            env.storage().persistent().extend_ttl(
+                &claimed_key,
+                PROJECT_TTL_THRESHOLD_LEDGERS,
+                PROJECT_TTL_BUMP_LEDGERS,
+            );
+        }
     }
 
     fn require_contract_admin(env: &Env, admin: &Address) -> Result<(), SplitError> {
