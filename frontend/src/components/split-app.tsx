@@ -1606,6 +1606,7 @@ export function SplitApp() {
                       </p>
                     </div>
                   ) : (
+                    <div className="flex gap-2">
                       {isProjectOwner && (
                         <div className="flex gap-2">
                           <button
