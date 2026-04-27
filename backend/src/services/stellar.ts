@@ -8,6 +8,8 @@ import {
 } from "@stellar/stellar-sdk";
 import { getEnv } from "../config/env.js";
 
+import { AppError, ErrorCode, ErrorType } from "../lib/errors.js";
+
 export interface StellarConfig {
   horizonUrl: string;
   sorobanRpcUrl: string;
@@ -16,9 +18,9 @@ export interface StellarConfig {
   simulatorAccount: string;
 }
 
-export class RequestValidationError extends Error {
+export class RequestValidationError extends AppError {
   constructor(message: string) {
-    super(message);
+    super(ErrorType.VALIDATION, ErrorCode.VALIDATION_ERROR, message);
     this.name = "RequestValidationError";
   }
 }
@@ -133,121 +135,66 @@ export function getStellarRpcServer(): rpc.Server {
   return cachedRpcServer;
 }
 
-/**
- * Detect whether an error from `server.getAccount(...)` actually means the
- * account doesn't exist, versus a transient RPC/network failure we should
- * surface as a 5xx. Checks common shapes: HTTP 404 status codes, numeric
- * `code`/`status` fields, and "not found" in the error message.
- */
-function isAccountNotFoundError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
+// ============================================================
+//  READ-RESULT CACHE
+//  TTL-based in-memory cache for read-only contract simulations.
+//  Invalidation rules:
+//   - Entries expire after `ttlMs` milliseconds (default 30 s).
+//   - Write operations (create, deposit, distribute, lock, etc.)
+//     must call `invalidateCache(key)` or `invalidateCacheByPrefix(prefix)`
+//     to evict stale entries immediately.
+//   - The cache is process-local; it is automatically warm up on the first
+//     read after a cold start or after an invalidation.
+// ============================================================
 
-  const maybeError = error as {
-    code?: number | string;
-    status?: number;
-    message?: string;
-    response?: { status?: number };
-  };
-
-  const message = maybeError.message?.toLowerCase() ?? "";
-
-  return (
-    maybeError.code === 404 ||
-    maybeError.status === 404 ||
-    maybeError.response?.status === 404 ||
-    /not[\s_-]?found/.test(message)
-  );
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
 }
 
-/**
- * Fetch the Soroban account for the given address. Only translates genuine
- * "not found" errors into RequestValidationError (→ 400). Other errors
- * (timeouts, RPC failures) propagate up so middleware can surface them as
- * 5xx instead of misleading 400s.
- *
- * Wrapped in executeWithRetry with maxRetries: 0 to keep the timeout race
- * without retrying — account-not-found isn't transient, and retrying would
- * blow past Express response timeouts on invalid addresses.
- */
-export async function resolveSourceAccount(
-  address: string,
-  roleLabel = "source"
-) {
-  const server = getStellarRpcServer();
-  try {
-    return await executeWithRetry(() => server.getAccount(address), {
-      maxRetries: 0
-    });
-  } catch (error) {
-    if (isAccountNotFoundError(error)) {
-      throw new RequestValidationError(
-        `${roleLabel} account not found on selected network`
-      );
+const _cache = new Map<string, CacheEntry<unknown>>();
+
+export const READ_CACHE_TTL_MS = 30_000; // 30 seconds default
+
+export function getCached<T>(key: string): T | undefined {
+  const entry = _cache.get(key) as CacheEntry<T> | undefined;
+  if (!entry) {
+    return undefined;
+  }
+  if (Date.now() > entry.expiresAt) {
+    _cache.delete(key);
+    console.debug(`[cache] MISS (expired) key=${key}`);
+    return undefined;
+  }
+  console.debug(`[cache] HIT key=${key}`);
+  return entry.value;
+}
+
+export function setCached<T>(key: string, value: T, ttlMs = READ_CACHE_TTL_MS): void {
+  _cache.set(key, { value, expiresAt: Date.now() + ttlMs });
+  console.debug(`[cache] SET key=${key} ttl=${ttlMs}ms`);
+}
+
+export function invalidateCache(key: string): void {
+  const deleted = _cache.delete(key);
+  if (deleted) {
+    console.debug(`[cache] INVALIDATE key=${key}`);
+  }
+}
+
+export function invalidateCacheByPrefix(prefix: string): void {
+  let count = 0;
+  for (const key of _cache.keys()) {
+    if (key.startsWith(prefix)) {
+      _cache.delete(key);
+      count++;
     }
-    throw error;
+  }
+  if (count > 0) {
+    console.debug(`[cache] INVALIDATE prefix=${prefix} removed=${count}`);
   }
 }
 
-/**
- * Parse a Stellar address string into an Address object, or throw a
- * RequestValidationError naming the field that failed validation.
- */
-export function parseStellarAddress(
-  value: string,
-  fieldLabel: string
-): Address {
-  try {
-    return Address.fromString(value);
-  } catch {
-    throw new RequestValidationError(
-      `${fieldLabel} must be a valid Stellar address`
-    );
-  }
-}
-
-/**
- * End-to-end primitive for building an unsigned contract-call transaction:
- * resolves the source account, assembles the contract invocation, prepares
- * the transaction, and shapes the response in the standard UnsignedTxResponse
- * form. New contract operations can be added by calling this with their
- * operation name + pre-built ScVal args.
- */
-export async function buildUnsignedContractCall(params: {
-  sourceAddress: string;
-  sourceRoleLabel?: string;
-  operation: string;
-  args: xdr.ScVal[];
-}): Promise<UnsignedTxResponse> {
-  const config = loadStellarConfig();
-  const server = getStellarRpcServer();
-
-  const sourceAccount = await resolveSourceAccount(
-    params.sourceAddress,
-    params.sourceRoleLabel ?? "source"
-  );
-
-  const contract = new Contract(config.contractId);
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase
-  })
-    .addOperation(contract.call(params.operation, ...params.args))
-    .setTimeout(300)
-    .build();
-
-  const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
-
-  return {
-    xdr: preparedTx.toXDR(),
-    metadata: {
-      contractId: config.contractId,
-      networkPassphrase: config.networkPassphrase,
-      sourceAccount: params.sourceAddress,
-      sequenceNumber: preparedTx.sequence,
-      fee: preparedTx.fee,
-      operation: params.operation
-    }
-  };
+export function getCacheStats(): { size: number; keys: string[] } {
+  return { size: _cache.size, keys: Array.from(_cache.keys()) };
 }
