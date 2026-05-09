@@ -18,6 +18,7 @@ import {
   getClaimable,
   getProjectHistory,
   getSplit,
+  listProjects,
   type ProjectHistoryItem,
   getTokenAllowlist,
   type TokenAllowlistState,
@@ -83,6 +84,7 @@ const getInitialCreateCollaborators = (): CreateCollaboratorInput[] => [
   { address: "", alias: "", basisPoints: "5000" },
   { address: "", alias: "", basisPoints: "5000" },
 ];
+
 
 const getInitialCreateFormValues = (): CreateSplitFormValues => ({
   projectId: "",
@@ -153,6 +155,9 @@ export function SplitApp() {
   const [projectsListLoaded, setProjectsListLoaded] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isLoadingProjectsList, setIsLoadingProjectsList] = useState(false);
+  const [projectsStart, setProjectsStart] = useState(0);
+  const [hasMoreProjects, setHasMoreProjects] = useState(true);
+  const PROJECTS_LIMIT = 10;
   const [projectsListError, setProjectsListError] = useState<string | null>(null);
   const [isProjectsListStale, setIsProjectsListStale] = useState(false);
   const [projectFetchError, setProjectFetchError] = useState<string | null>(null);
@@ -742,10 +747,30 @@ export function SplitApp() {
     }
   };
 
+  // Phase 3: Fetch projects list from backend with pagination
+  const onFetchProjectsList = useCallback(async (loadMore = false) => {
+    if (isLoadingProjectsList) return;
+    if (!loadMore && projectsList.length > 0) return;
+    
   const onFetchProjectsList = useCallback(async () => {
     setIsLoadingProjectsList(true);
     setProjectsListError(null);
     try {
+      const start = loadMore ? projectsStart : 0;
+      const projects = await listProjects({ start, limit: PROJECTS_LIMIT });
+      
+      if (loadMore) {
+        setProjectsList(prev => [...prev, ...projects]);
+      } else {
+        setProjectsList(projects);
+        setProjectsStart(0);
+      }
+      
+      const newStart = start + projects.length;
+      setProjectsStart(newStart);
+      setHasMoreProjects(projects.length === PROJECTS_LIMIT);
+      
+      if (projects.length === 0 && !loadMore) {
       const projects: SplitProject[] = [];
       for (const id of SEEDED_PROJECT_IDS) {
         try {
@@ -761,6 +786,8 @@ export function SplitApp() {
       setIsLoadingProjectsList(false);
       setProjectsListLoaded(true);
     }
+  }, [isLoadingProjectsList, projectsList.length, projectsStart, listProjects]);
+  }, [projectsList.length]);
   }, []);
 
   const onFetchDashboardData = useCallback(async () => {
@@ -894,6 +921,12 @@ export function SplitApp() {
   };
 
   useEffect(() => {
+    if (activeTab === "projects") {
+      if (projectsList.length === 0 && !isLoadingProjectsList) {
+        void onFetchProjectsList();
+      }
+    } else if (activeTab === "dashboard" && dashboardData.length === 0 && !isLoadingDashboard) {
+    if (activeTab === "projects" && !projectsListLoaded && !isLoadingProjectsList) {
     if (activeTab === "projects" && !projectsListLoaded && !isLoadingProjectsList)
       void onFetchProjectsList();
     if (activeTab === "dashboard" && !dashboardListLoaded && !isLoadingDashboard)
