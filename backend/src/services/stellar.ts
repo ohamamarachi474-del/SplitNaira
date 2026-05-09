@@ -1,4 +1,11 @@
-import { rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  BASE_FEE,
+  Contract,
+  TransactionBuilder,
+  rpc,
+  xdr
+} from "@stellar/stellar-sdk";
 import { getEnv } from "../config/env.js";
 
 import { AppError, ErrorCode, ErrorType } from "../lib/errors.js";
@@ -79,6 +86,22 @@ export async function executeWithRetry<T>(
   }
 
   throw lastError || new RpcError("RPC operation failed after retries");
+}
+
+/**
+ * Shape returned by every unsigned-transaction builder — what the client
+ * receives to sign with Freighter and submit back to the network.
+ */
+export interface UnsignedTxResponse {
+  xdr: string;
+  metadata: {
+    contractId: string;
+    networkPassphrase: string;
+    sourceAccount: string;
+    sequenceNumber: string;
+    fee: string;
+    operation: string;
+  };
 }
 
 let cachedConfig: StellarConfig | null = null;

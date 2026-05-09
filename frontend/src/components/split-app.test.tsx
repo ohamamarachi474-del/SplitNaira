@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SplitApp } from "./split-app";
 import { ToastProvider } from "./toast-provider";
+import { WalletProvider } from "./wallet-provider";
 
 const mocks = vi.hoisted(() => ({
   mockUseWallet: vi.fn(),
@@ -100,7 +101,9 @@ vi.mock("@stellar/stellar-sdk", () => ({
 function renderSplitApp() {
   return render(
     <ToastProvider>
-      <SplitApp />
+      <WalletProvider>
+        <SplitApp />
+      </WalletProvider>
     </ToastProvider>
   );
 }

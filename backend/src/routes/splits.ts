@@ -12,9 +12,9 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
-import { 
-  loadStellarConfig, 
-  getStellarRpcServer, 
+import {
+  loadStellarConfig,
+  getStellarRpcServer,
   RequestValidationError,
   executeWithRetry,
   getCached,
@@ -638,6 +638,11 @@ export const listProjectsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(10)
 });
 
+const adminTokenSchema = z.object({
+  admin: stellarAddressSchema.describe("admin"),
+  token: stellarAddressSchema.describe("token")
+});
+
 splitsRouter.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = listProjectsSchema.safeParse(req.query);
@@ -968,14 +973,28 @@ splitsRouter.post("/:projectId/distribute", async (req: Request, res: Response, 
     const server = getStellarRpcServer();
 
     let sourceAccount;
+    const sourceAddress = parsed.data?.sourceAddress || config.simulatorAccount;
+    try {
+      sourceAccount = await server.getAccount(sourceAddress);
+    } catch {
+      throw new AppError(
+        ErrorType.ACCOUNT_STATE,
+        ErrorCode.ACCOUNT_NOT_FOUND,
+        "Source account not found on selected network",
+        { message: "The account used to trigger distribution must exist and be funded.", action: "Check Source Wallet" }
+      );
+    const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+
+    let sourceAccount;
+    const sourceAddress = parsed.data?.sourceAddress || config.simulatorAccount;
+
     const sourceAddress = parsedBody.data.sourceAddress || config.simulatorAccount;
     try {
-      sourceAccount = await executeWithRetry(() => server.getAccount(sourceAddress));
-    } catch {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "source account not found on selected network",
-        requestId
+      const result = await buildUnsignedContractCall({
+        sourceAddress,
+        sourceRoleLabel: "source",
+        operation: "distribute",
+        args: [nativeToScVal(projectId, { type: "symbol" })]
       });
     }
 
@@ -1011,7 +1030,8 @@ splitsRouter.post("/:projectId/distribute", async (req: Request, res: Response, 
         fee: preparedTx.fee,
         operation: "distribute"
       }
-    });
+      throw error;
+    }
   } catch (error) {
     return next(error);
   }
@@ -1182,80 +1202,34 @@ async function buildUnpauseDistributionsUnsignedXdr(input: PauseDistributionsReq
   };
 }
 
-async function buildAllowTokenUnsignedXdr(input: AdminTokenRequest) {
-  const config = loadStellarConfig();
-  const server = getStellarRpcServer();
-
-  let sourceAccount;
-  try {
-    sourceAccount = await executeWithRetry(() => server.getAccount(input.admin));
-  } catch {
-    throw new RequestValidationError("admin account not found on selected network");
-  }
-
+async function buildAllowTokenUnsignedXdr(
+  input: AdminTokenRequest
+): Promise<UnsignedTxResponse> {
+  parseStellarAddress(input.admin, "admin address");
+  parseStellarAddress(input.token, "token address");
   const args = buildAdminTokenContractArgs(input);
 
-  const contract = new Contract(config.contractId);
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase
-  })
-    .addOperation(
-      contract.call("allow_token", ...args)
-    )
-    .setTimeout(300)
-    .build();
-
-  const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
-  return {
-    xdr: preparedTx.toXDR(),
-    metadata: {
-      contractId: config.contractId,
-      networkPassphrase: config.networkPassphrase,
-      sourceAccount: input.admin,
-      sequenceNumber: preparedTx.sequence,
-      fee: preparedTx.fee,
-      operation: "allow_token"
-    }
-  };
+  return buildUnsignedContractCall({
+    sourceAddress: input.admin,
+    sourceRoleLabel: "admin",
+    operation: "allow_token",
+    args
+  });
 }
 
-async function buildDisallowTokenUnsignedXdr(input: AdminTokenRequest) {
-  const config = loadStellarConfig();
-  const server = getStellarRpcServer();
-
-  let sourceAccount;
-  try {
-    sourceAccount = await executeWithRetry(() => server.getAccount(input.admin));
-  } catch {
-    throw new RequestValidationError("admin account not found on selected network");
-  }
-
+async function buildDisallowTokenUnsignedXdr(
+  input: AdminTokenRequest
+): Promise<UnsignedTxResponse> {
+  parseStellarAddress(input.admin, "admin address");
+  parseStellarAddress(input.token, "token address");
   const args = buildAdminTokenContractArgs(input);
 
-  const contract = new Contract(config.contractId);
-  const tx = new TransactionBuilder(sourceAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase
-  })
-    .addOperation(
-      contract.call("disallow_token", ...args)
-    )
-    .setTimeout(300)
-    .build();
-
-  const preparedTx = await executeWithRetry(() => server.prepareTransaction(tx));
-  return {
-    xdr: preparedTx.toXDR(),
-    metadata: {
-      contractId: config.contractId,
-      networkPassphrase: config.networkPassphrase,
-      sourceAccount: input.admin,
-      sequenceNumber: preparedTx.sequence,
-      fee: preparedTx.fee,
-      operation: "disallow_token"
-    }
-  };
+  return buildUnsignedContractCall({
+    sourceAddress: input.admin,
+    sourceRoleLabel: "admin",
+    operation: "disallow_token",
+    args
+  });
 }
 
 splitsRouter.post("/admin/allow-token", async (req: Request, res: Response, next: NextFunction) => {
