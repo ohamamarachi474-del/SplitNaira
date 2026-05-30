@@ -1,4 +1,4 @@
-import { ZodSchema, ZodError } from "zod";
+import { z, ZodError } from "zod";
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../services/logger.js";
 
@@ -8,16 +8,33 @@ export type RouteHandler = (
   next: NextFunction,
 ) => Promise<void> | void;
 
+// In-process counter — exposed for tests and metrics endpoints.
+let _validationFailureCount = 0;
+
+export function getValidationFailureCount(): number {
+  return _validationFailureCount;
+}
+
+export function resetValidationFailureCount(): void {
+  _validationFailureCount = 0;
+}
+
 /**
  * Wraps a route handler and validates its JSON response body against
  * a Zod schema before sending it to the client.
  *
- * On schema mismatch the request fails with 500 in production and
- * logs the diff so response-shape drift is visible in CI rather than
- * in frontend breakage.
+ * Behaviour on schema mismatch:
+ *  - Always increments the in-process failure counter and logs the diff.
+ *  - Returns 500 when strict mode is active (production default, or when
+ *    STRICT_RESPONSE_VALIDATION=true is set explicitly).
+ *  - In non-strict mode, logs-only and forwards the original body so
+ *    development iteration is not blocked by partial coverage.
+ *
+ * Enable strict mode: set STRICT_RESPONSE_VALIDATION=true
+ * Disable in production: set STRICT_RESPONSE_VALIDATION=false (not recommended)
  */
 export function withResponseValidation<T>(
-  schema: ZodSchema<T>,
+  schema: z.ZodType<T>,
   handler: RouteHandler,
 ): RouteHandler {
   return async (req, res, next) => {
@@ -27,22 +44,28 @@ export function withResponseValidation<T>(
       const result = schema.safeParse(body);
 
       if (!result.success) {
+        _validationFailureCount += 1;
+
         const formatted = formatZodError(result.error);
+        const requestId = res.locals.requestId as string | undefined;
+
         logger.error("Response schema validation failed", {
+          requestId,
           method: req.method,
           path: req.path,
-          errors: formatted
+          errors: formatted,
+          validationFailureCount: _validationFailureCount,
         });
 
-        if (process.env.NODE_ENV !== "production") {
+        if (isStrictMode()) {
+          res.status(500);
           return originalJson({
-            error: "Response schema validation failed",
-            details: result.error.flatten(),
+            error: "internal_error",
+            message: "Response schema validation failed.",
+            requestId,
+            details: {},
           });
         }
-
-        // In production, still send the response but alert via log.
-        // Swap this for a hard failure once all endpoints are covered.
       }
 
       return originalJson(body);
@@ -50,6 +73,14 @@ export function withResponseValidation<T>(
 
     return handler(req, res, next);
   };
+}
+
+function isStrictMode(): boolean {
+  const explicit = process.env.STRICT_RESPONSE_VALIDATION;
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  // Default: strict in production, lenient elsewhere.
+  return process.env.NODE_ENV === "production";
 }
 
 function formatZodError(error: ZodError): string {

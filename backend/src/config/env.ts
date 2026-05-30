@@ -20,6 +20,19 @@ const backendEnvSchema = z.object({
 
   CORS_ORIGIN: z.string().optional(),
   LOG_LEVEL: z.string().optional().default("info"),
+  LOG_FORMAT: z.enum(["json", "pretty"]).optional().default("pretty"),
+
+  SENTRY_DSN: z.string().url("SENTRY_DSN must be a valid URL").optional(),
+  SENTRY_ENVIRONMENT: z.string().optional(),
+  SENTRY_SCRUB_WALLET_ADDRESSES: z
+    .enum(["true", "false"])
+    .optional()
+    .default("true"),
+
+  STRICT_RESPONSE_VALIDATION: z
+    .enum(["true", "false"])
+    .optional()
+    .default("false"),
 
   DATABASE_URL: z
     .string()
@@ -72,6 +85,27 @@ const backendEnvSchema = z.object({
       (val) => val === undefined || (Number.isInteger(Number(val)) && Number(val) > 0),
       "DATABASE_POOL_MAX must be a positive integer",
     ),
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV === "production") {
+    if (!data.CORS_ORIGIN || data.CORS_ORIGIN.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["CORS_ORIGIN"],
+        message:
+          "CORS_ORIGIN is required in production. Set it to a comma-separated list of allowed frontend origins (e.g. https://app.splitnaira.com).",
+      });
+    } else {
+      const origins = data.CORS_ORIGIN.split(",").map((o) => o.trim());
+      if (origins.includes("*")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["CORS_ORIGIN"],
+          message:
+            "CORS_ORIGIN must not contain '*' in production. Specify explicit frontend origin(s).",
+        });
+      }
+    }
+  }
 });
 
 export type BackendEnv = z.infer<typeof backendEnvSchema>;
@@ -142,6 +176,10 @@ export function printEnvDiagnostics(): void {
     { key: "PORT", required: false },
     { key: "CORS_ORIGIN", required: false },
     { key: "LOG_LEVEL", required: false },
+    { key: "LOG_FORMAT", required: false },
+    { key: "SENTRY_DSN", required: false },
+    { key: "SENTRY_ENVIRONMENT", required: false },
+    { key: "STRICT_RESPONSE_VALIDATION", required: false },
     { key: "DATABASE_URL", required: true },
     { key: "HORIZON_URL", required: true },
     { key: "SOROBAN_RPC_URL", required: true },
