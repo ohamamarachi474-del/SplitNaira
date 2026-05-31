@@ -11,8 +11,8 @@ const PROJECT_ID_BUCKET_SIZE: u32 = 100;
 mod errors;
 mod events;
 use events::{
-    DepositReceived, DistributionComplete, MetadataUpdated, OwnershipTransferred, PaymentSent,
-    ProjectCreated, ProjectLocked, UnallocatedWithdrawn,
+    CollaboratorsUpdated, DepositReceived, DistributionComplete, MetadataUpdated,
+    OwnershipTransferred, PaymentSent, ProjectCreated, ProjectLocked, UnallocatedWithdrawn,
 };
 #[cfg(test)]
 mod tests;
@@ -377,8 +377,13 @@ impl SplitNairaContract {
         project.collaborators = collaborators;
         env.storage()
             .persistent()
-            .set(&DataKey::Project(project_id), &project);
+            .set(&DataKey::Project(project_id.clone()), &project);
         Self::bump_project_ttl(&env, &project.project_id);
+
+        CollaboratorsUpdated {
+            project_id: project_id.clone(),
+        }
+        .publish(&env);
 
         Ok(())
     }
