@@ -5,7 +5,8 @@ import helmet from "helmet";
 import morgan from "morgan";
 import dotenv from "dotenv";
 import swaggerUi from "swagger-ui-express";
-import { healthRouter } from "./routes/health.js";
+import { healthRouter, markStartupComplete } from "./routes/health.js";
+import { isMetricsEnabled, metricsRouter } from "./routes/metrics.js";
 import { splitsRouter } from "./routes/splits.js";
 import { docsRouter } from "./routes/docs.js";
 import { usersRouter } from "./routes/users.js";
@@ -87,6 +88,9 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/health", healthRouter);
+if (isMetricsEnabled()) {
+  app.use("/metrics", metricsRouter);
+}
 app.use("/splits", splitsRouter);
 app.use("/docs", docsRouter);
 app.use("/users", usersRouter);
@@ -169,6 +173,7 @@ if (process.env.NODE_ENV !== "test") {
 
       await initDatabase();
       await startEventListenerService();
+      markStartupComplete();
 
       const port = Number(process.env.PORT ?? 3001);
       const server = app.listen(port, () => {
