@@ -208,7 +208,14 @@ export function printEnvDiagnostics(): void {
     { key: "SOROBAN_RPC_URL", required: true },
     { key: "SOROBAN_NETWORK_PASSPHRASE", required: true },
     { key: "CONTRACT_ID", required: true },
-    { key: "SIMULATOR_ACCOUNT", required: true }
+    { key: "SIMULATOR_ACCOUNT", required: true },
+    { key: "MAINNET_CONTRACT_ID", required: false },
+    { key: "RENDER_BACKEND_DEPLOY_HOOK_URL", required: false },
+    { key: "DATABASE_POOL_MAX", required: false },
+    { key: "DATABASE_POOL_IDLE_MS", required: false },
+    { key: "DATABASE_POOL_CONN_TIMEOUT_MS", required: false },
+    { key: "READ_CACHE_TTL_MS", required: false },
+    { key: "READ_CACHE_MAX_ENTRIES", required: false }
   ];
 
   logger.info("[env] Environment diagnostics:");
