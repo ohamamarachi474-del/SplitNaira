@@ -31,7 +31,13 @@ The API documentation is defined using Zod schemas and generated into an OpenAPI
 
 ## Release operations & production readiness
 
-### Platform Hardening (Wave 5)
+- **Database transaction safety** — user registration runs inside `withTransaction()` with automatic rollback
+- **Structured logging** — critical paths use Winston with `requestId`
+- **Analytics & insights** — Prometheus metrics for HTTP request volumes, latency, inflight request gauges, and validation failures
+- **Input validation** — `validateRequest` middleware returns consistent 400 payloads
+- **Error handling** — centralized `AppError` mapping and RPC retry policy
+- **Rate limiting** — layered limits on all route groups
+- **Payments admin hardening** — `/splits/admin/*` can be protected with `PAYMENTS_ADMIN_API_KEY`, and write actions can be frozen instantly with `PAYMENTS_ADMIN_WRITE_ENABLED=false`
 
 The backend includes comprehensive production-grade hardening:
 
